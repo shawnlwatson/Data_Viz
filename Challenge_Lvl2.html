@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<meta charset="UTF-8">
+<!-- Temperature Heatmap Control Buttons -->
+<style>
+    #container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 24px;
+    }
+</style>
+
+<div id="container"></div>
+
+<script type="module">
+
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+
+// Chart Dimensions and Margins
+const width = 1200;
+const height = 600;
+const margin = { top: 50, right: 75, bottom: 50, left: 200 };
+const axisGap = 10;
+
+// Section: Load and Parse Data
+
+// Load and Parse CSV Data
+const allData = await d3.csv("temperature_daily.csv");
+const data = allData.filter(row => {
+    const year = Number(row.date.slice(0,4));
+    return year >= 2008 && year <= 2017;
+});
+
+// Extract unique years from the data
+const years = [...new Set(data.map(row => row.date.slice(0, 4)))].sort();
+console.log(years);
+
+// Extract unique months from the data
+const months = [...new Set(data.map(row => row.date.slice(5, 7)))].sort();
+const monthNames = ["January", "February", "March", "April", "May", "June", 
+"July", "August", "September", "October", "November", "December"];
+console.log(months);
+
+// Extract temperature values
+const minTemp = d3.min(data, row => Number(row.min_temperature));
+const maxTemp = d3.max(data, row => Number(row.max_temperature));
+console.log(minTemp, maxTemp, maxTemp - minTemp);
+
+// Section: Create Color Scale
+
+const color = d3.scaleSequential(d3.interpolateOrRd)
+    .domain([minTemp, maxTemp]);
+
+// Create SVG Container for Matrix and Legend
+const svg = d3.select("#container")
+    .append("svg")
+    .attr("width", width)
+    .attr("height", height);
+
+// Section: Create Legend
+
+// Create SVG Container for Legend
+const legendX = 30
+const legendY = margin.top;
+const legendWidth = 20;
+const legendHeight = height - margin.top - margin.bottom;
+
+// Create a vertical gradient: Hottest at the top, coolest at the bottom
+const gradient = svg.append("defs")
+    .append("linearGradient")
+    .attr("id", "temperature-gradient")
+    .attr("x1", "0%")
+    .attr("y1", "0%")
+    .attr("x2", "0%")
+    .attr("y2", "100%");
+
+// Sample the color scale to create gradient
+gradient.selectAll("stop")
+    .data(d3.range(101))
+    .join("stop")
+    .attr("offset", step => step + "%")
+    .attr("stop-color", step => color(maxTemp - (step / 100) * (maxTemp - minTemp)));
+
+// Create the gradient bar
+svg.append("rect")
+    .attr("x", legendX)
+    .attr("y", legendY)
+    .attr("width", legendWidth)
+    .attr("height", legendHeight)
+    .style("fill", "url(#temperature-gradient)")
+    .attr("stroke", "black")
+    .attr("stroke-width", 1);
+
+svg.append("text")
+    .attr("transform", `translate(${legendX - 12}, ${legendY + legendHeight / 2}) rotate(-90)`)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "18px")
+    .attr("font-family", "sans-serif")
+    .text("Temperature (°C)");
+
+
+// Map temperature values to vertical positions for the labels
+const legendScale = d3.scaleLinear()
+    .domain([minTemp, maxTemp])
+    .range([legendHeight, 0]);
+
+svg.append("g")
+    .attr( "transform", `translate(${legendX + legendWidth}, ${legendY})`)
+    .call(d3.axisRight(legendScale)
+        .ticks(5)
+        .tickFormat(temp => `${temp}°C`));
+
+// Section: Create SVG Container and Axes
+
+// SVG container created above, before the legend.
+
+// X-Axis Scale
+const x = d3.scaleBand()
+    .domain(years)
+    .range([margin.left + axisGap, width - margin.right]);
+
+    svg.append("g")
+        .attr("transform", `translate(0, ${height - margin.bottom})`)
+        .call(d3.axisBottom(x)
+        .tickFormat(year => year));
+
+// Y-Axis Scale
+const y = d3.scaleBand()
+    .domain([...months].reverse())
+    .range([margin.top, height - margin.bottom - axisGap]);
+
+svg.append("g")
+    .attr("transform", `translate(${margin.left}, 0)`)
+    .call(d3.axisLeft(y)
+    .tickFormat(month => monthNames[Number(month) - 1]));
+
+// Section: Create Heatmap Matrix
+const monthlyData = d3.rollups(
+    data,
+    rows => ({
+        maxTemp: d3.mean(rows, row => Number(row.max_temperature)),
+        // Estimate mean temperature from each day's high-low midpoint.
+        meanTemp: d3.mean(rows, row =>
+            (Number(row.max_temperature) + Number(row.min_temperature)) / 2),
+        minTemp: d3.mean(rows, row => Number(row.min_temperature)),
+        dailyTemps: rows.map(row => ({
+            day: Number(row.date.slice(8, 10)),
+            maxTemp: Number(row.max_temperature),
+            minTemp: Number(row.min_temperature)
+        })).sort((a, b) => a.day - b.day)
+    }),
+    row => row.date.slice(0, 7) // Group by year-month
+).map(([yearMonth, temperatures]) => ({
+    year: yearMonth.slice(0,4),
+    month: yearMonth.slice(5,7),
+    ...temperatures
+}));
+console.log(monthlyData);
+
+const cells = svg.append("g")
+    .selectAll("rect")
+    .data(monthlyData)
+    .join("rect")
+    .attr("x", row => x(row.year))
+    .attr("y", row => y(row.month))
+    .attr("width", x.bandwidth())
+    .attr("height", y.bandwidth())
+    .attr("fill", row => color(row.meanTemp))
+    .attr("stroke", "white")
+    .attr("stroke-width", 1);
+
+// Add Hover-over data for detail of each cell
+cells.append("title")
+    .text(row =>
+        `Date: ${row.year}-${row.month}\n` +
+        `Max: ${row.maxTemp.toFixed(2)}\u00B0C\n` +
+        `Average: ${row.meanTemp.toFixed(2)}\u00B0C\n` +
+        `Min: ${row.minTemp.toFixed(2)}\u00B0C`
+    );
+// Click Handler for cells
+cells.on("click", (event, month) => {
+    showMonthDetail(month);
+});
+
+// Section: Daily Temperature Mini-Charts
+const cellPadding = 4;
+
+// Use the same temperature range in every mini-chart
+const dailyY = d3.scaleLinear()
+    .domain([minTemp, maxTemp])
+    .range([y.bandwidth() - cellPadding, cellPadding]);
+
+const miniCharts = svg.append("g")
+    .selectAll("g")
+    .data(monthlyData)
+    .join("g")
+    .attr("transform", row => `translate(${x(row.year)}, ${y(row.month)})`)
+    .attr("pointer-events", "none");
+
+miniCharts.each(function(month) {
+    // Find how many days are in this month
+    const daysInMonth = new Date(Number(month.year), Number(month.month), 0).getDate();
+    const dailyX = d3.scaleLinear()
+        .domain([1, daysInMonth])
+        .range([cellPadding, x.bandwidth() - cellPadding]);
+    
+    const maxLine = d3.line()
+        .x(day => dailyX(day.day))
+        .y(day => dailyY(day.maxTemp));
+    const minLine = d3.line()
+        .x(day => dailyX(day.day))
+        .y(day => dailyY(day.minTemp));
+    
+    const chart = d3.select(this);
+
+    // Append max temperature line
+    chart.append("path")
+        .datum(month.dailyTemps)
+        .attr("d", maxLine)
+        .attr("fill", "none")
+        .attr("stroke", "chartreuse")
+        .attr("stroke-width", 1.5);
+    
+        // Append min temperature line
+    chart.append("path")
+        .datum(month.dailyTemps)
+        .attr("d", minLine)
+        .attr("fill", "none")
+        .attr("stroke", "aqua")
+        .attr("stroke-width", 1.5);
+});
+// Line Color Legend
+const LineLegend = svg.append("g")
+    .attr("transform", `translate(${margin.left}, 25)`);
+
+const lineLabels = [
+    { label: "Daily Maximum", color: "chartreuse" },
+    { label: "Daily Minimum", color: "aqua" },
+];
+const legendItems = LineLegend.selectAll("g")
+    .data(lineLabels)
+    .join("g")
+    .attr("transform", (item, index) => `translate(${index * 180}, 0)`);
+
+legendItems.append("rect")
+    .attr("x", 0)
+    .attr("y", -10)
+    .attr("width", 25)
+    .attr("height", 20)
+    .attr("fill", item => item.color);
+
+legendItems.append("text")
+    .attr("x", 32)
+    .attr("dominant-baseline", "middle")
+    .attr("font-family", "sans-serif")
+    .attr("font-size", "14px")
+    .text(item => item.label);
+
+LineLegend.append("text")
+    .attr("x", 320)
+    .attr("y", 5)
+    .attr("font-family", "sans-serif")
+    .attr("font-size", "18px")
+    .text("Click on a cell to enlarge the month detail");
+
+function showMonthDetail(month) {
+    // Remove any existing month detail
+    svg.select("#month-detail").remove();
+    // Append last so the panel appears on top of the matrix
+    const detail = svg.append("g")
+        .attr("id", "month-detail");
+    const matrixWidth = (width - margin.left - margin.right);
+    const matrixHeight = (height - margin.top - margin.bottom);
+    const panelWidth = matrixWidth * 0.8;
+    const panelHeight = matrixHeight * 0.8;
+    const panelX = margin.left + (matrixWidth - panelWidth) / 2;
+    const panelY = margin.top + (matrixHeight - panelHeight) / 2;
+    
+    // Cover matrix with a background rectangle
+    detail.append("rect")
+        .attr("x", panelX)
+        .attr("y", panelY)
+        .attr("width", panelWidth)
+        .attr("height", panelHeight)
+        .attr("fill", color(month.meanTemp))
+        .attr("stroke", "black")
+        .attr("stroke-width", 1);
+    
+    // Identify the month being detailed
+    detail.append("text")
+        .attr("x", panelX + 20)
+        .attr("y", panelY + 30)
+        .attr("font-family", "sans-serif")
+        .attr("font-size", "16px")
+        .text(`${monthNames[Number(month.month) - 1]} ${month.year}`);
+    
+    // Close the panel and reveal the matrix
+    detail.append("text")
+        .attr("x", panelX + panelWidth - 20)
+        .attr("y", panelY + 30)
+        .attr("text-anchor", "end")
+        .attr("font-family", "sans-serif")
+        .attr("cursor", "pointer")
+        .text("Close ✖")
+        .on("click", () => detail.remove());
+
+const plotLeft = panelX + 55;
+const plotRight = panelX + panelWidth - 20;
+const plotTop = panelY + 50;
+const plotBottom = panelY + panelHeight - 20;
+const daysInMonth = new Date(
+    Number(month.year), Number(month.month), 0
+).getDate();
+// Scales for the enlarged chart
+const detailX = d3.scaleLinear()
+    .domain([1, daysInMonth])
+    .range([plotLeft, plotRight]);
+const detailY = d3.scaleLinear()
+    .domain([minTemp, maxTemp])
+    .range([plotBottom, plotTop]);
+// Draw the axes for the enlarged chart
+detail.append("g")
+    .attr("transform", `translate(0, ${plotBottom})`)
+    .call(d3.axisBottom(detailX)
+        .ticks(10)
+        .tickFormat(d3.format("d")));
+detail.append("g")
+    .attr("transform", `translate(${plotLeft}, 0)`)
+    .call(d3.axisLeft(detailY)
+        .tickFormat(temp => `${temp}\u00B0C`));
+// Draw the lines for the temperature data
+const series = [
+    { key: "maxTemp", color: "chartreuse"},
+    { key: "minTemp", color: "aqua"}
+];
+series.forEach(seriesItem => {
+    const line = d3.line()
+        .x(day => detailX(day.day))
+        .y(day => detailY(day[seriesItem.key]));
+    
+    detail.append("path")
+        .datum(month.dailyTemps)
+        .attr("d", line)
+        .attr("fill", "none")
+        .attr("stroke", seriesItem.color)
+        .attr("stroke-width", 2);
+});
+}
+
+</script>

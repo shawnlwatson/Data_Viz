@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<meta charset="UTF-8">
+<!-- Temperature Heatmap Control Buttons -->
+<style>
+    #container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 24px;
+    }
+    #temperature-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    #temperature-controls button {
+        padding: 10px 14px;
+        cursor: pointer;
+        border: 1px solid #777;
+        border-radius: 4px;
+        background: white;
+        color: black;
+    }
+    #temperature-controls button[aria-pressed="true"] {
+        background: #333;
+        color: white;
+    }
+</style>
+
+<div id="container">
+    <div id="temperature-controls" role="group" aria-label="Temperature view">
+        <button type="button" data-metric="maxTemp" aria-pressed="true">Maximum temperature</button>
+        <button type="button" data-metric="meanTemp" aria-pressed="false">Average temperature</button>
+        <button type="button" data-metric="minTemp" aria-pressed="false">Minimum temperature</button>
+    </div>
+</div>
+<script type="module">
+
+import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+
+// Chart Dimensions and Margins
+const width = 1000;
+const height = 600;
+const margin = { top: 50, right: 75, bottom: 50, left: 200 };
+const axisGap = 10;
+
+// Section: Load and Parse Data
+
+// Load and Parse CSV Data
+const data = await d3.csv("temperature_daily.csv");
+
+// Extract unique years from the data
+const years = [...new Set(data.map(row => row.date.slice(0, 4)))].sort();
+console.log(years);
+
+// Extract unique months from the data
+const months = [...new Set(data.map(row => row.date.slice(5, 7)))].sort();
+const monthNames = ["January", "February", "March", "April", "May", "June", 
+"July", "August", "September", "October", "November", "December"];
+console.log(months);
+
+// Extract temperature values
+const minTemp = d3.min(data, row => Number(row.min_temperature));
+const maxTemp = d3.max(data, row => Number(row.max_temperature));
+console.log(minTemp, maxTemp, maxTemp - minTemp);
+
+// Section: Create Color Scale
+
+const color = d3.scaleSequential(d3.interpolateOrRd)
+    .domain([minTemp, maxTemp]);
+
+
+// Create SVG Container for Matrix and Legend
+const svg = d3.select("#container")
+    .append("svg")
+    .attr("width", width)
+    .attr("height", height);
+
+// Section: Create Legend
+
+// Create SVG Container for Legend
+const legendX = 30
+const legendY = margin.top;
+const legendWidth = 20;
+const legendHeight = height - margin.top - margin.bottom;
+
+// Create a vertical gradient: Hottest at the top, coolest at the bottom
+const gradient = svg.append("defs")
+    .append("linearGradient")
+    .attr("id", "temperature-gradient")
+    .attr("x1", "0%")
+    .attr("y1", "0%")
+    .attr("x2", "0%")
+    .attr("y2", "100%");
+
+// Sample the color scale to create gradient
+gradient.selectAll("stop")
+    .data(d3.range(101))
+    .join("stop")
+    .attr("offset", step => step + "%")
+    .attr("stop-color", step => color(maxTemp - (step / 100) * (maxTemp - minTemp)));
+
+// Create the gradient bar
+svg.append("rect")
+    .attr("x", legendX)
+    .attr("y", legendY)
+    .attr("width", legendWidth)
+    .attr("height", legendHeight)
+    .style("fill", "url(#temperature-gradient)")
+    .attr("stroke", "black")
+    .attr("stroke-width", 1);
+
+svg.append("text")
+    .attr("transform", `translate(${legendX - 12}, ${legendY + legendHeight / 2}) rotate(-90)`)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "18px")
+    .attr("font-family", "sans-serif")
+    .text("Temperature (°C)");
+
+
+// Map temperature values to vertical positions for the labels
+const legendScale = d3.scaleLinear()
+    .domain([minTemp, maxTemp])
+    .range([legendHeight, 0]);
+
+svg.append("g")
+    .attr( "transform", `translate(${legendX + legendWidth}, ${legendY})`)
+    .call(d3.axisRight(legendScale)
+        .ticks(5)
+        .tickFormat(temp => `${temp}°C`));
+
+// Section: Create SVG Container and Axes
+
+// SVG container created above, before the legend.
+
+// X-Axis Scale
+const x = d3.scaleBand()
+    .domain(years)
+    .range([margin.left + axisGap, width - margin.right]);
+
+    svg.append("g")
+        .attr("transform", `translate(0, ${height - margin.bottom})`)
+        .call(d3.axisBottom(x)
+        .tickFormat(year => year));
+
+// Y-Axis Scale
+const y = d3.scaleBand()
+    .domain([...months].reverse())
+    .range([margin.top, height - margin.bottom - axisGap]);
+
+svg.append("g")
+    .attr("transform", `translate(${margin.left}, 0)`)
+    .call(d3.axisLeft(y)
+    .tickFormat(month => monthNames[Number(month) - 1]));
+
+// Section: Create Heatmap Matrix
+const monthlyData = d3.rollups(
+    data,
+    rows => ({
+        maxTemp: d3.mean(rows, row => Number(row.max_temperature)),
+        // Estimate mean temperature from each day's high-low midpoint.
+        meanTemp: d3.mean(rows, row =>
+            (Number(row.max_temperature) + Number(row.min_temperature)) / 2),
+        minTemp: d3.mean(rows, row => Number(row.min_temperature))
+    }),
+    row => row.date.slice(0, 7) // Group by year-month
+).map(([yearMonth, temperatures]) => ({
+    year: yearMonth.slice(0,4),
+    month: yearMonth.slice(5,7),
+    ...temperatures
+}));
+console.log(monthlyData);
+
+const cells = svg.append("g")
+    .selectAll("rect")
+    .data(monthlyData)
+    .join("rect")
+    .attr("x", row => x(row.year))
+    .attr("y", row => y(row.month))
+    .attr("width", x.bandwidth())
+    .attr("height", y.bandwidth())
+    .attr("fill", row => color(row.maxTemp))
+    .attr("stroke", "white")
+    .attr("stroke-width", 1);
+
+// Add Hover-over data for detail of each cell
+cells.append("title")
+    .text(row =>
+        `Date: ${row.year}-${row.month}\n` +
+        `Max: ${row.maxTemp.toFixed(2)}\u00B0C\n` +
+        `Average: ${row.meanTemp.toFixed(2)}\u00B0C\n` +
+        `Min: ${row.minTemp.toFixed(2)}\u00B0C`
+    );
+
+// Recolor the existing cells when a temperature view is selected.
+const buttons = d3.select("#temperature-controls").selectAll("button");
+buttons.on("click", function () {
+    const metric = this.dataset.metric;
+    cells.attr("fill", row => color(row[metric]));
+    buttons.attr("aria-pressed", function () {
+        return String(this.dataset.metric === metric);
+    });
+});
+
+
+
+
+
+</script>
